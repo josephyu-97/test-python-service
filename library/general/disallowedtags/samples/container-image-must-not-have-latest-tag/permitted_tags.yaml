@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: permitted-tags
+  namespace: default
+spec:
+  containers:
+    - name: permitted
+      image: host:5000/team/app:1.2.3
+    - name: permitted-digest
+      image: host:5000/team/app:1.2.3@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    - name: not-latest
+      image: app:notlatest
+    - name: latest-extra
+      image: app:latest-extra
+    - name: case-sensitive
+      image: app:Latest

@@ -17,7 +17,7 @@ metadata:
   name: k8sdisallowedtags
   annotations:
     metadata.gatekeeper.sh/title: "Disallow tags"
-    metadata.gatekeeper.sh/version: 1.0.2
+    metadata.gatekeeper.sh/version: 1.0.3
     description: >-
       Requires container images to have an image tag different from the ones in
       the specified list.
@@ -57,17 +57,25 @@ spec:
         violation[{"msg": msg}] {
             container := input_containers[_]
             not is_exempt(container)
-            tags := [tag_with_prefix | tag := input.parameters.tags[_]; tag_with_prefix := concat(":", ["", tag])]
-            strings.any_suffix_match(container.image, tags)
+            tag := image_tag(container.image)
+            tag == input.parameters.tags[_]
             msg := sprintf("container <%v> uses a disallowed tag <%v>; disallowed tags are %v", [container.name, container.image, input.parameters.tags])
         }
 
         violation[{"msg": msg}] {
             container := input_containers[_]
             not is_exempt(container)
-            parts := split(container.image, "/")
-            not contains(parts[count(parts) - 1], ":")
+            not image_tag(container.image)
             msg := sprintf("container <%v> didn't specify an image tag <%v>", [container.name, container.image])
+        }
+
+        image_tag(image) = tag {
+            image_without_digest := split(image, "@")[0]
+            components := split(image_without_digest, "/")
+            final_component := components[count(components) - 1]
+            tag_parts := split(final_component, ":")
+            count(tag_parts) > 1
+            tag := tag_parts[count(tag_parts) - 1]
         }
 
         input_containers[c] {
@@ -357,6 +365,185 @@ Usage
 
 ```shell
 kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/example_some_disallowed_tags.yaml
+```
+
+</details>
+<details>
+<summary>tagged-digest-all-container-types</summary>
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tagged-digest-all-container-types
+  namespace: default
+spec:
+  containers:
+    - name: regular-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  initContainers:
+    - name: init-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ephemeralContainers:
+    - name: ephemeral-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/tagged_digest_all_container_types.yaml
+```
+
+</details>
+<details>
+<summary>digest-only-all-container-types</summary>
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: digest-only-all-container-types
+  namespace: default
+spec:
+  containers:
+    - name: regular-digest-only
+      image: host:5000/team/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  initContainers:
+    - name: init-digest-only
+      image: host:5000/team/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  ephemeralContainers:
+    - name: ephemeral-digest-only
+      image: host:5000/team/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/digest_only_all_container_types.yaml
+```
+
+</details>
+<details>
+<summary>permitted-tags-with-and-without-digests</summary>
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: permitted-tags
+  namespace: default
+spec:
+  containers:
+    - name: permitted
+      image: host:5000/team/app:1.2.3
+    - name: permitted-digest
+      image: host:5000/team/app:1.2.3@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    - name: not-latest
+      image: app:notlatest
+    - name: latest-extra
+      image: app:latest-extra
+    - name: case-sensitive
+      image: app:Latest
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/permitted_tags.yaml
+```
+
+</details>
+<details>
+<summary>untagged-images-and-allowed-tag-substrings</summary>
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: untagged-and-tag-substrings
+  namespace: default
+spec:
+  containers:
+    - name: untagged
+      image: app
+    - name: untagged-with-registry-port
+      image: host:5000/team/app
+    - name: not-latest
+      image: app:notlatest
+    - name: latest-extra
+      image: app:latest-extra
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/untagged_and_tag_substrings.yaml
+```
+
+</details>
+
+
+</details><details>
+<summary>digest-reference-exemptions</summary>
+
+<details>
+<summary>constraint</summary>
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowedTags
+metadata:
+  name: container-image-digest-exemptions
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces:
+      - "default"
+  parameters:
+    tags: ["latest"]
+    exemptImages:
+      - "host:5000/team/exact:latest@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      - "host:5000/team/wild@sha256:*"
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/constraint_digest_exemptions.yaml
+```
+
+</details>
+
+<details>
+<summary>exact-and-wildcard-exempt-digest-references</summary>
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: exempt-digest-references
+  namespace: default
+spec:
+  containers:
+    - name: exact-exempt
+      image: host:5000/team/exact:latest@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    - name: wildcard-exempt
+      image: host:5000/team/wild@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/disallowedtags/samples/container-image-must-not-have-latest-tag/exempt_digest_references.yaml
 ```
 
 </details>

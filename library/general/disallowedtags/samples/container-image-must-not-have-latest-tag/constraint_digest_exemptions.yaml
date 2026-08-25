@@ -1,0 +1,16 @@
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowedTags
+metadata:
+  name: container-image-digest-exemptions
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces:
+      - "default"
+  parameters:
+    tags: ["latest"]
+    exemptImages:
+      - "host:5000/team/exact:latest@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      - "host:5000/team/wild@sha256:*"

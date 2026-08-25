@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tagged-digest-all-container-types
+  namespace: default
+spec:
+  containers:
+    - name: regular-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  initContainers:
+    - name: init-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ephemeralContainers:
+    - name: ephemeral-tagged-digest
+      image: host:5000/team/app:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

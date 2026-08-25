@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: exempt-digest-references
+  namespace: default
+spec:
+  containers:
+    - name: exact-exempt
+      image: host:5000/team/exact:latest@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    - name: wildcard-exempt
+      image: host:5000/team/wild@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee

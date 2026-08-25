@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: untagged-and-tag-substrings
+  namespace: default
+spec:
+  containers:
+    - name: untagged
+      image: app
+    - name: untagged-with-registry-port
+      image: host:5000/team/app
+    - name: not-latest
+      image: app:notlatest
+    - name: latest-extra
+      image: app:latest-extra
