@@ -166,6 +166,7 @@ setup() {
         local preflight_dir="${BATS_TEST_TMPDIR}/preflight-${attempted_constraints}"
         local allowed_index=0
         local disallowed_index=0
+        local -a preflight_pids=()
         mkdir -p "$preflight_dir"
         for allowed in "$sample"/example_allowed*.yaml; do
           if [[ -e "$allowed" ]]; then
@@ -177,6 +178,7 @@ setup() {
                 printf '%s\n' "$?"
               fi
             ) >"${preflight_dir}/allowed-${allowed_index}" &
+            preflight_pids+=( "$!" )
             allowed_index=$((allowed_index + 1))
           fi
         done
@@ -190,10 +192,14 @@ setup() {
                 printf '%s\n' "$?"
               fi
             ) >"${preflight_dir}/disallowed-${disallowed_index}" &
+            preflight_pids+=( "$!" )
             disallowed_index=$((disallowed_index + 1))
           fi
         done
-        wait
+        local preflight_pid
+        for preflight_pid in "${preflight_pids[@]}"; do
+          wait "$preflight_pid"
+        done
 
         local -a pending_allowed=()
         allowed_index=0
