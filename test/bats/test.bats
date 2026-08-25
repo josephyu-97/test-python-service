@@ -238,10 +238,22 @@ setup() {
           done
           run kubectl apply "${allowed_arguments[@]}"
           assert_success
-          local allowed_created_count
-          allowed_created_count=$(grep -cE ' created$' <<<"$output")
-          assert_equal "${#allowed_wave[@]}" "$allowed_created_count"
-          kubectl delete --ignore-not-found "${allowed_arguments[@]}"
+          local allowed_created_count=0
+          allowed_created_count=$(grep -cE ' created$' <<<"$output" || true)
+          if [[ "$allowed_created_count" -eq "${#allowed_wave[@]}" ]]; then
+            kubectl delete --ignore-not-found "${allowed_arguments[@]}"
+          else
+            # A pre-existing cluster object can turn a grouped apply into
+            # "configured". Restore the fresh-resource condition and rerun the
+            # original create assertion independently for every fixture.
+            kubectl delete --ignore-not-found "${allowed_arguments[@]}"
+            for allowed in "${allowed_wave[@]}"; do
+              run kubectl apply -f "$allowed"
+              assert_match 'created' "$output"
+              assert_success
+              kubectl delete --ignore-not-found -f "$allowed"
+            done
+          fi
           pending_allowed=( "${next_allowed_wave[@]}" )
         done
 
