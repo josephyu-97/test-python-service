@@ -112,6 +112,15 @@ setup() {
   assert_equal "$EXPECTED_ALLOWED_COUNT" "$discovered_allowed"
   assert_equal "$EXPECTED_DISALLOWED_COUNT" "$discovered_disallowed"
 
+  # Keep one authenticated API connection available for the many readiness
+  # observations instead of starting two kubectl clients for every attempt.
+  local proxy_log="${BATS_TEST_TMPDIR}/kubectl-proxy.log"
+  kubectl proxy --port=8001 >"$proxy_log" 2>&1 &
+  local proxy_pid=$!
+  CLEAN_CMD="${CLEAN_CMD}; kill ${proxy_pid} 2>/dev/null || true"
+  wait_for_process 10 ${READINESS_SLEEP_TIME} "curl -fsS http://127.0.0.1:8001/version >/dev/null"
+  export KUBERNETES_API_PROXY=http://127.0.0.1:8001
+
   # Templates do not enforce anything without constraints. Install the verified
   # kustomization once so Gatekeeper can reconcile them in parallel, while the
   # loop below still exercises every policy and its constraints in isolation.
@@ -186,20 +195,48 @@ setup() {
         done
         wait
 
+        local -a pending_allowed=()
         allowed_index=0
         for allowed in "$sample"/example_allowed*.yaml; do
           if [[ -e "$allowed" ]]; then
             if [[ "$(<"${preflight_dir}/allowed-${allowed_index}")" == 0 ]]; then
-              echo "Applying ${allowed} with contents:"
-              cat ${allowed}
-              run kubectl apply -f "$allowed"
-              assert_match 'created' "$output"
-              assert_success
-              # delete resource
-              kubectl delete --ignore-not-found -f "$allowed"
+              pending_allowed+=( "$allowed" )
             fi
             allowed_index=$((allowed_index + 1))
           fi
+        done
+
+        # Apply resources with distinct identities together. Duplicate fixture
+        # identities are assigned to later waves so every create retains the
+        # existing "created" assertion and deletion cleanup.
+        while ((${#pending_allowed[@]} > 0)); do
+          local -A allowed_wave_identities=()
+          local -a allowed_wave=()
+          local -a next_allowed_wave=()
+          local allowed_identity
+          for allowed in "${pending_allowed[@]}"; do
+            manifest_identity allowed_identity "$allowed"
+            if [[ -v "allowed_wave_identities[$allowed_identity]" ]]; then
+              next_allowed_wave+=( "$allowed" )
+            else
+              allowed_wave_identities["$allowed_identity"]=1
+              allowed_wave+=( "$allowed" )
+            fi
+          done
+
+          local -a allowed_arguments=()
+          for allowed in "${allowed_wave[@]}"; do
+            echo "Applying ${allowed} with contents:"
+            cat "$allowed"
+            allowed_arguments+=( -f "$allowed" )
+          done
+          run kubectl apply "${allowed_arguments[@]}"
+          assert_success
+          local allowed_created_count
+          allowed_created_count=$(grep -cE ' created$' <<<"$output")
+          assert_equal "${#allowed_wave[@]}" "$allowed_created_count"
+          kubectl delete --ignore-not-found "${allowed_arguments[@]}"
+          pending_allowed=( "${next_allowed_wave[@]}" )
         done
 
         disallowed_index=0

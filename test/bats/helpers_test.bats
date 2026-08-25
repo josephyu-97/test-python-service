@@ -50,6 +50,31 @@ slow_failure() {
   return 1
 }
 
+curl() {
+  local url="${*: -1}"
+
+  if [[ "$url" == *"/api/v1/namespaces/gatekeeper-system/pods?"* ]]; then
+    if ((pods_api_status != 0)); then
+      echo "pod API unavailable" >&2
+      return "$pods_api_status"
+    fi
+    printf '%s\n' "$pods_json"
+    return 0
+  fi
+
+  if [[ "$url" == *"/apis/constraints.gatekeeper.sh/v1beta1/ExampleConstraint/example" ]]; then
+    if ((constraint_api_status != 0)); then
+      echo "constraint API unavailable" >&2
+      return "$constraint_api_status"
+    fi
+    printf '%s\n' "$constraint_json"
+    return 0
+  fi
+
+  echo "unexpected curl arguments: $*" >&2
+  return 99
+}
+
 kubectl() {
   if [[ " $* " == *" get pod "* ]]; then
     if ((pods_api_status != 0)); then
@@ -213,4 +238,77 @@ kubectl() {
 
   assert_failure
   assert_match 'Error gathering constraint ExampleConstraint example' "$output"
+}
+
+@test "constraint_enforced accepts readiness through the persistent API proxy" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+
+  run constraint_enforced ExampleConstraint example
+
+  assert_success
+  assert_match 'ready: 2, expected: 2' "$output"
+}
+
+@test "constraint_enforced rejects pod API errors through the persistent API proxy" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+  pods_api_status=1
+
+  run constraint_enforced ExampleConstraint example
+
+  assert_failure
+  assert_match 'error gathering pods' "$output"
+}
+
+@test "constraint_enforced rejects constraint API errors through the persistent API proxy" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+  constraint_api_status=1
+
+  run constraint_enforced ExampleConstraint example
+
+  assert_failure
+  assert_match 'Error gathering constraint ExampleConstraint example' "$output"
+}
+
+@test "manifest_identity distinguishes names and defaults namespaces" {
+  local first="${BATS_TEST_TMPDIR}/first.yaml"
+  local second="${BATS_TEST_TMPDIR}/second.yaml"
+  local first_identity
+  local second_identity
+  cat >"$first" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example
+spec: {}
+YAML
+  cat >"$second" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: other
+  namespace: default
+spec: {}
+YAML
+
+  manifest_identity first_identity "$first"
+  manifest_identity second_identity "$second"
+
+  assert_equal "v1/Pod/default/example" "$first_identity"
+  assert_equal "v1/Pod/default/other" "$second_identity"
+}
+
+@test "manifest_identity rejects a resource without a name" {
+  local manifest="${BATS_TEST_TMPDIR}/unnamed.yaml"
+  cat >"$manifest" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+spec: {}
+YAML
+
+  run manifest_identity identity "$manifest"
+
+  assert_failure
+  assert_match 'unable to determine resource identity' "$output"
 }

@@ -224,6 +224,76 @@ constraint_status_ready() {
   [[ "$ready_count" -eq "$pod_count" && "$current_pods_match" == "true" ]]
 }
 
+manifest_identity() {
+  local destination="$1"
+  local manifest="$2"
+  local api_version=""
+  local kind=""
+  local name=""
+  local namespace="default"
+  local in_metadata=false
+  local line
+  local value
+
+  while IFS= read -r line; do
+    case "$line" in
+      apiVersion:*)
+        api_version="${line#*:}"
+        api_version="${api_version#"${api_version%%[![:space:]]*}"}"
+        ;;
+      kind:*)
+        kind="${line#*:}"
+        kind="${kind#"${kind%%[![:space:]]*}"}"
+        ;;
+      metadata:)
+        in_metadata=true
+        ;;
+      '  name:'*)
+        if [[ "$in_metadata" == true ]]; then
+          name="${line#*:}"
+          name="${name#"${name%%[![:space:]]*}"}"
+        fi
+        ;;
+      '  namespace:'*)
+        if [[ "$in_metadata" == true ]]; then
+          namespace="${line#*:}"
+          namespace="${namespace#"${namespace%%[![:space:]]*}"}"
+        fi
+        ;;
+      [![:space:]]*)
+        in_metadata=false
+        ;;
+    esac
+  done <"$manifest"
+
+  if [[ -z "$api_version" || -z "$kind" || -z "$name" ]]; then
+    echo "unable to determine resource identity from ${manifest}" >&2
+    return 1
+  fi
+
+  value="${api_version}/${kind}/${namespace}/${name}"
+  printf -v "$destination" '%s' "$value"
+}
+
+constraint_get_pods() {
+  if [[ -n "${KUBERNETES_API_PROXY:-}" ]]; then
+    curl -fsS "${KUBERNETES_API_PROXY}/api/v1/namespaces/gatekeeper-system/pods?labelSelector=gatekeeper.sh%2Foperation%3Dwebhook"
+  else
+    kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json
+  fi
+}
+
+constraint_get_object() {
+  local kind="$1"
+  local name="$2"
+
+  if [[ -n "${KUBERNETES_API_PROXY:-}" ]]; then
+    curl -fsS "${KUBERNETES_API_PROXY}/apis/constraints.gatekeeper.sh/v1beta1/${kind}/${name}"
+  else
+    kubectl get "$kind" "$name" -o json
+  fi
+}
+
 constraint_enforced() {
   local kind="$1"
   local name="$2"
@@ -239,9 +309,9 @@ constraint_enforced() {
 
   # These are independent API reads. Run them concurrently to avoid adding
   # their command latencies together on every readiness observation.
-  kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json >"$pods_file" &
+  constraint_get_pods >"$pods_file" &
   pods_pid=$!
-  kubectl get "$kind" "$name" -o json >"$constraint_file" &
+  constraint_get_object "$kind" "$name" >"$constraint_file" &
   constraint_pid=$!
 
   if wait "$pods_pid"; then
