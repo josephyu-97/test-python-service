@@ -12,6 +12,7 @@ setup() {
   constraint_json='{"metadata":{"generation":4},"status":{"byPod":[{"id":"webhook-a","observedGeneration":4,"operations":["webhook"],"enforced":true},{"id":"webhook-b","observedGeneration":4,"operations":["audit","webhook"],"enforced":true}]}}'
   pods_api_status=0
   constraint_api_status=0
+  constraint_create_http_status=201
   constraint_delete_http_status=200
   constraint_after_delete_http_status=404
 }
@@ -55,8 +56,10 @@ slow_failure() {
 curl() {
   local url="${*: -1}"
 
-  if [[ " $* " == *" %{http_code} "* && "$url" == *"/apis/constraints.gatekeeper.sh/v1beta1/ExampleConstraint/example" ]]; then
-    if [[ " $* " == *" -X DELETE "* ]]; then
+  if [[ " $* " == *" %{http_code} "* && "$url" == *"/apis/constraints.gatekeeper.sh/v1beta1/ExampleConstraint"* ]]; then
+    if [[ " $* " == *" -X POST "* ]]; then
+      printf '%s' "$constraint_create_http_status"
+    elif [[ " $* " == *" -X DELETE "* ]]; then
       printf '%s' "$constraint_delete_http_status"
     else
       printf '%s' "$constraint_after_delete_http_status"
@@ -84,6 +87,10 @@ curl() {
 
   echo "unexpected curl arguments: $*" >&2
   return 99
+}
+
+yq() {
+  printf '{"apiVersion":"constraints.gatekeeper.sh/v1beta1","kind":"ExampleConstraint","metadata":{"name":"example"}}\n'
 }
 
 kubectl() {
@@ -347,6 +354,40 @@ YAML
   constraint_after_delete_http_status=200
 
   run constraint_deleted ExampleConstraint example constraint.yaml
+
+  assert_failure
+}
+
+@test "manifest_metadata_name parses supported metadata indentation" {
+  local manifest="${BATS_TEST_TMPDIR}/named.yaml"
+  local name
+  cat >"$manifest" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+    name: indented-example
+spec: {}
+YAML
+
+  manifest_metadata_name name "$manifest"
+
+  assert_equal "indented-example" "$name"
+}
+
+@test "constraint_created posts through the persistent API proxy" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+
+  run constraint_created ExampleConstraint example constraint.yaml
+
+  assert_success
+  assert_match 'constraint ExampleConstraint/example created' "$output"
+}
+
+@test "constraint_created rejects API creation failures" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+  constraint_create_http_status=500
+
+  run constraint_created ExampleConstraint example constraint.yaml
 
   assert_failure
 }

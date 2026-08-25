@@ -132,7 +132,8 @@ setup() {
       local template_name=$(basename "$policy")
       echo "running integration test against policy group: $policy_group, constraint template: $template_name"
       attempted_policies=$((attempted_policies + 1))
-      local kind=$(yq e .metadata.name "$policy"/template.yaml)
+      local kind
+      manifest_metadata_name kind "$policy"/template.yaml
       for sample in "$policy"/samples/*; do
         echo "testing sample constraint: $(basename "$sample")"
 
@@ -156,8 +157,9 @@ setup() {
 
         # Apply one constraint at a time so policy assertions remain isolated.
         attempted_constraints=$((attempted_constraints + 1))
-        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${sample}/constraint.yaml"
-        local name=$(yq e .metadata.name "$sample"/constraint.yaml)
+        local name
+        manifest_metadata_name name "$sample"/constraint.yaml
+        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_created $kind $name ${sample}/constraint.yaml"
         wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_enforced $kind $name"
 
         # Server-side preflights are independent once readiness is established.

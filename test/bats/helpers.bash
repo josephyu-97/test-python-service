@@ -224,6 +224,38 @@ constraint_status_ready() {
   [[ "$ready_count" -eq "$pod_count" && "$current_pods_match" == "true" ]]
 }
 
+manifest_metadata_name() {
+  local destination="$1"
+  local manifest="$2"
+  local in_metadata=false
+  local line
+  local parsed_name=""
+
+  while IFS= read -r line; do
+    case "$line" in
+      metadata:)
+        in_metadata=true
+        ;;
+      '  name:'*|'    name:'*)
+        if [[ "$in_metadata" == true ]]; then
+          parsed_name="${line#*:}"
+          parsed_name="${parsed_name#"${parsed_name%%[![:space:]]*}"}"
+          break
+        fi
+        ;;
+      [![:space:]]*)
+        in_metadata=false
+        ;;
+    esac
+  done <"$manifest"
+
+  if [[ -z "$parsed_name" ]]; then
+    echo "unable to determine metadata.name from ${manifest}" >&2
+    return 1
+  fi
+  printf -v "$destination" '%s' "$parsed_name"
+}
+
 manifest_identity() {
   local destination="$1"
   local manifest="$2"
@@ -292,6 +324,47 @@ constraint_get_object() {
   else
     kubectl get "$kind" "$name" -o json
   fi
+}
+
+constraint_created() {
+  local kind="$1"
+  local name="$2"
+  local manifest="$3"
+  local json_file
+  local response_file
+  local http_code
+  local collection_url
+
+  if [[ -z "${KUBERNETES_API_PROXY:-}" ]]; then
+    kubectl apply -f "$manifest"
+    return
+  fi
+
+  json_file="${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}/constraint-${kind}-${name}.json"
+  response_file="${json_file}.response"
+  yq e -o=json "$manifest" >"$json_file" || return 1
+  collection_url="${KUBERNETES_API_PROXY}/apis/constraints.gatekeeper.sh/v1beta1/${kind}"
+  if ! http_code="$(curl -sS -o "$response_file" -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data-binary "@${json_file}" "$collection_url")"; then
+    return 1
+  fi
+
+  case "$http_code" in
+    2??)
+      echo "constraint ${kind}/${name} created"
+      return 0
+      ;;
+    409)
+      # A previous request may have reached the API server even if its response
+      # was lost. Remove the ambiguous object, then let the outer wait retry the
+      # exact manifest rather than accepting potentially stale parameters.
+      constraint_deleted "$kind" "$name" "$manifest" || return 1
+      return 1
+      ;;
+    *)
+      cat "$response_file" >&2
+      return 1
+      ;;
+  esac
 }
 
 constraint_deleted() {
