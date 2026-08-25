@@ -112,23 +112,23 @@ setup() {
   assert_equal "$EXPECTED_ALLOWED_COUNT" "$discovered_allowed"
   assert_equal "$EXPECTED_DISALLOWED_COUNT" "$discovered_disallowed"
 
+  # Templates do not enforce anything without constraints. Install the verified
+  # kustomization once so Gatekeeper can reconcile them in parallel, while the
+  # loop below still exercises every policy and its constraints in isolation.
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -k $TESTS_DIR"
+
   for policy in "$TESTS_DIR"/*/*; do
     if [ -d "$policy" ]; then
       local policy_group=$(basename "$(dirname "$policy")")
       local template_name=$(basename "$policy")
       echo "running integration test against policy group: $policy_group, constraint template: $template_name"
-      # apply template
       attempted_policies=$((attempted_policies + 1))
-      wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -k $policy"
       local kind=$(yq e .metadata.name "$policy"/template.yaml)
       for sample in "$policy"/samples/*; do
         echo "testing sample constraint: $(basename "$sample")"
-        # apply constraint
-        attempted_constraints=$((attempted_constraints + 1))
-        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${sample}/constraint.yaml"
-        local name=$(yq e .metadata.name "$sample"/constraint.yaml)
-        wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_enforced $kind $name"
 
+        # Inventory describes pre-existing cluster state and must not be
+        # rejected by the constraint it is intended to exercise.
         for inventory in "$sample"/example_inventory*.yaml; do
           if [[ -e "$inventory" ]]; then
             attempted_inventory=$((attempted_inventory + 1))
@@ -137,6 +137,12 @@ setup() {
             assert_success
           fi
         done
+
+        # Apply one constraint at a time so policy assertions remain isolated.
+        attempted_constraints=$((attempted_constraints + 1))
+        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${sample}/constraint.yaml"
+        local name=$(yq e .metadata.name "$sample"/constraint.yaml)
+        wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_enforced $kind $name"
 
         for allowed in "$sample"/example_allowed*.yaml; do
           if [[ -e "$allowed" ]]; then
@@ -183,8 +189,6 @@ setup() {
         wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl delete -f ${sample}/constraint.yaml"
 
       done
-      # delete template
-      kubectl delete -k "$policy"
     fi
   done
 
