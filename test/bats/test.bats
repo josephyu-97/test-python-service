@@ -128,15 +128,22 @@ setup() {
         echo "testing sample constraint: $(basename "$sample")"
 
         # Inventory describes pre-existing cluster state and must not be
-        # rejected by the constraint it is intended to exercise.
+        # rejected by the constraint it is intended to exercise. A single
+        # kubectl process can safely create all inventory for this sample.
+        local -a inventory_arguments=()
         for inventory in "$sample"/example_inventory*.yaml; do
           if [[ -e "$inventory" ]]; then
             attempted_inventory=$((attempted_inventory + 1))
-            run kubectl apply -f "$inventory"
-            assert_match 'created' "$output"
-            assert_success
+            inventory_arguments+=( -f "$inventory" )
           fi
         done
+        if ((${#inventory_arguments[@]} > 0)); then
+          run kubectl apply "${inventory_arguments[@]}"
+          assert_success
+          local inventory_created_count
+          inventory_created_count=$(grep -cE ' created$' <<<"$output")
+          assert_equal "$((${#inventory_arguments[@]} / 2))" "$inventory_created_count"
+        fi
 
         # Apply one constraint at a time so policy assertions remain isolated.
         attempted_constraints=$((attempted_constraints + 1))
@@ -144,12 +151,45 @@ setup() {
         local name=$(yq e .metadata.name "$sample"/constraint.yaml)
         wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_enforced $kind $name"
 
+        # Server-side preflights are independent once readiness is established.
+        # Run them concurrently, recording one status per fixture, then retain
+        # the existing per-fixture create/deny assertions below.
+        local preflight_dir="${BATS_TEST_TMPDIR}/preflight-${attempted_constraints}"
+        local allowed_index=0
+        local disallowed_index=0
+        mkdir -p "$preflight_dir"
         for allowed in "$sample"/example_allowed*.yaml; do
           if [[ -e "$allowed" ]]; then
-            # The server-side dry run is the first attempt for every discovered
-            # fixture; unsupported APIs retain their existing skip behavior.
             attempted_allowed=$((attempted_allowed + 1))
-            if kubectl apply -f "$allowed" --dry-run=server &> /dev/null; then
+            (
+              if kubectl apply -f "$allowed" --dry-run=server &> /dev/null; then
+                printf '0\n'
+              else
+                printf '%s\n' "$?"
+              fi
+            ) >"${preflight_dir}/allowed-${allowed_index}" &
+            allowed_index=$((allowed_index + 1))
+          fi
+        done
+        for disallowed in "$sample"/example_disallowed*.yaml; do
+          if [[ -e "$disallowed" ]]; then
+            attempted_disallowed=$((attempted_disallowed + 1))
+            (
+              if kubectl apply -f "$disallowed" --dry-run=server &> /dev/null; then
+                printf '0\n'
+              else
+                printf '%s\n' "$?"
+              fi
+            ) >"${preflight_dir}/disallowed-${disallowed_index}" &
+            disallowed_index=$((disallowed_index + 1))
+          fi
+        done
+        wait
+
+        allowed_index=0
+        for allowed in "$sample"/example_allowed*.yaml; do
+          if [[ -e "$allowed" ]]; then
+            if [[ "$(<"${preflight_dir}/allowed-${allowed_index}")" == 0 ]]; then
               echo "Applying ${allowed} with contents:"
               cat ${allowed}
               run kubectl apply -f "$allowed"
@@ -158,15 +198,14 @@ setup() {
               # delete resource
               kubectl delete --ignore-not-found -f "$allowed"
             fi
+            allowed_index=$((allowed_index + 1))
           fi
         done
 
+        disallowed_index=0
         for disallowed in "$sample"/example_disallowed*.yaml; do
           if [[ -e "$disallowed" ]]; then
-            # The server-side dry run is the first attempt for every discovered
-            # fixture; unsupported APIs retain their existing skip behavior.
-            attempted_disallowed=$((attempted_disallowed + 1))
-            if kubectl apply -f "$disallowed" --dry-run=server &> /dev/null; then
+            if [[ "$(<"${preflight_dir}/disallowed-${disallowed_index}")" == 0 ]]; then
               echo "Applying ${disallowed} with contents:"
               cat ${disallowed}
               run kubectl apply -f "$disallowed"
@@ -175,15 +214,15 @@ setup() {
               # delete resource
               run kubectl delete --ignore-not-found -f "$disallowed"
             fi
+            disallowed_index=$((disallowed_index + 1))
           fi
         done
+        rm -rf "$preflight_dir"
 
         # delete inventory resources
-        for inventory in "$sample"/example_inventory*.yaml; do
-          if [[ -e "$inventory" ]]; then
-            kubectl delete --ignore-not-found -f "$inventory"
-          fi
-        done
+        if ((${#inventory_arguments[@]} > 0)); then
+          kubectl delete --ignore-not-found "${inventory_arguments[@]}"
+        fi
 
         # delete constraint
         wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl delete -f ${sample}/constraint.yaml"

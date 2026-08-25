@@ -227,18 +227,48 @@ constraint_status_ready() {
 constraint_enforced() {
   local kind="$1"
   local name="$2"
+  local result_prefix="${TMPDIR:-/tmp}/constraint-enforced-${BASHPID}-${RANDOM}"
+  local pods_file="${result_prefix}-pods"
+  local constraint_file="${result_prefix}-constraint"
+  local pods_pid
+  local constraint_pid
+  local pods_status
+  local constraint_status
   local pod_list
   local cstr
 
-  if ! pod_list="$(kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json)"; then
+  # These are independent API reads. Run them concurrently to avoid adding
+  # their command latencies together on every readiness observation.
+  kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json >"$pods_file" &
+  pods_pid=$!
+  kubectl get "$kind" "$name" -o json >"$constraint_file" &
+  constraint_pid=$!
+
+  if wait "$pods_pid"; then
+    pods_status=0
+  else
+    pods_status=$?
+  fi
+  if wait "$constraint_pid"; then
+    constraint_status=0
+  else
+    constraint_status=$?
+  fi
+
+  if ((pods_status != 0)); then
+    rm -f "$pods_file" "$constraint_file"
     echo "error gathering pods"
     return 1
   fi
-
-  if ! cstr="$(kubectl get "$kind" "$name" -o json)"; then
+  if ((constraint_status != 0)); then
+    rm -f "$pods_file" "$constraint_file"
     echo "Error gathering constraint ${kind} ${name}"
     return 1
   fi
+
+  pod_list="$(<"$pods_file")"
+  cstr="$(<"$constraint_file")"
+  rm -f "$pods_file" "$constraint_file"
 
   echo "checking constraint ${kind} ${name}"
   constraint_status_ready "$pod_list" "$cstr"
