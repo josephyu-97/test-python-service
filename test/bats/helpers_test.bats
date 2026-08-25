@@ -12,6 +12,8 @@ setup() {
   constraint_json='{"metadata":{"generation":4},"status":{"byPod":[{"id":"webhook-a","observedGeneration":4,"operations":["webhook"],"enforced":true},{"id":"webhook-b","observedGeneration":4,"operations":["audit","webhook"],"enforced":true}]}}'
   pods_api_status=0
   constraint_api_status=0
+  constraint_delete_http_status=200
+  constraint_after_delete_http_status=404
 }
 
 wait_clock_now() {
@@ -52,6 +54,15 @@ slow_failure() {
 
 curl() {
   local url="${*: -1}"
+
+  if [[ " $* " == *" %{http_code} "* && "$url" == *"/apis/constraints.gatekeeper.sh/v1beta1/ExampleConstraint/example" ]]; then
+    if [[ " $* " == *" -X DELETE "* ]]; then
+      printf '%s' "$constraint_delete_http_status"
+    else
+      printf '%s' "$constraint_after_delete_http_status"
+    fi
+    return 0
+  fi
 
   if [[ "$url" == *"/api/v1/namespaces/gatekeeper-system/pods?"* ]]; then
     if ((pods_api_status != 0)); then
@@ -311,4 +322,31 @@ YAML
 
   assert_failure
   assert_match 'unable to determine resource identity' "$output"
+}
+
+@test "constraint_deleted confirms absence through the persistent API proxy" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+
+  run constraint_deleted ExampleConstraint example constraint.yaml
+
+  assert_success
+  assert_match 'constraint ExampleConstraint/example deleted' "$output"
+}
+
+@test "constraint_deleted rejects API deletion failures" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+  constraint_delete_http_status=500
+
+  run constraint_deleted ExampleConstraint example constraint.yaml
+
+  assert_failure
+}
+
+@test "constraint_deleted does not accept a resource that remains present" {
+  KUBERNETES_API_PROXY=http://127.0.0.1:8001
+  constraint_after_delete_http_status=200
+
+  run constraint_deleted ExampleConstraint example constraint.yaml
+
+  assert_failure
 }

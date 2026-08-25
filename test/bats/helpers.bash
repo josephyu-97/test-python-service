@@ -294,6 +294,40 @@ constraint_get_object() {
   fi
 }
 
+constraint_deleted() {
+  local kind="$1"
+  local name="$2"
+  local manifest="$3"
+  local url
+  local delete_code
+  local get_code
+
+  if [[ -z "${KUBERNETES_API_PROXY:-}" ]]; then
+    kubectl delete -f "$manifest"
+    return
+  fi
+
+  url="${KUBERNETES_API_PROXY}/apis/constraints.gatekeeper.sh/v1beta1/${kind}/${name}"
+  if ! delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$url")"; then
+    return 1
+  fi
+  case "$delete_code" in
+    2??|404) ;;
+    *) return 1 ;;
+  esac
+
+  # Do not let an API error masquerade as absence. Only an explicit 404 means
+  # cleanup is complete and the next sample can be isolated safely.
+  if ! get_code="$(curl -sS -o /dev/null -w '%{http_code}' "$url")"; then
+    return 1
+  fi
+  if [[ "$get_code" == 404 ]]; then
+    echo "constraint ${kind}/${name} deleted"
+    return 0
+  fi
+  return 1
+}
+
 constraint_enforced() {
   local kind="$1"
   local name="$2"

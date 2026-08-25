@@ -279,8 +279,8 @@ setup() {
           kubectl delete --ignore-not-found "${inventory_arguments[@]}"
         fi
 
-        # delete constraint
-        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl delete -f ${sample}/constraint.yaml"
+        # delete constraint and confirm API absence before the next sample
+        wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_deleted $kind $name ${sample}/constraint.yaml"
 
       done
     fi
