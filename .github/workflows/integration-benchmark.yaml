@@ -1,0 +1,57 @@
+name: Integration benchmark
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        gatekeeper: ["3.20.1", "3.21.0"]
+        engine: ["cel", "rego"]
+    name: "Benchmark Gatekeeper ${{ matrix.gatekeeper }} / ${{ matrix.engine }}"
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Record environment
+        run: |
+          echo "runner_name=$RUNNER_NAME"
+          echo "runner_os=$RUNNER_OS"
+          echo "runner_arch=$RUNNER_ARCH"
+          echo "runner_image=${ImageOS:-unknown}"
+          echo "runner_image_version=${ImageVersion:-unknown}"
+          uname -a
+          docker version
+          helm version
+
+      - name: Bootstrap integration test
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+          make integration-bootstrap
+          make deploy GATEKEEPER_VERSION=${{ matrix.gatekeeper }} POLICY_ENGINE=${{ matrix.engine }}
+
+      - name: Run integration test
+        run: make test-integration
+
+      - name: Save diagnostics
+        if: always()
+        run: |
+          kubectl version || true
+          kind version || true
+          kubectl get pods -A -o wide || true
+          kubectl logs -n gatekeeper-system -l control-plane=controller-manager --tail=-1 > logs-controller.json || true
+          kubectl logs -n gatekeeper-system -l control-plane=audit-controller --tail=-1 > logs-audit.json || true
