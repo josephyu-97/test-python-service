@@ -1,0 +1,5 @@
+# Repository files are bind-mounted at runtime. Image builds only need the
+# small build-tool directory (including Gomplate's committed checksums).
+*
+!build/
+!build/**

@@ -7,6 +7,8 @@ GATEKEEPER_VERSION ?= 3.21.0
 BATS_VERSION ?= 1.12.0
 GATOR_VERSION ?= 3.21.0
 GOMPLATE_VERSION ?= 3.11.6
+GOMPLATE_IMAGE ?= gomplate-container
+GOMPLATE_PLATFORM ?=
 POLICY_ENGINE ?= rego
 
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
@@ -69,14 +71,22 @@ __build-gator:
 
 .PHONY: generate
 generate: __build-gomplate
-	$(docker) run \
+	$(docker) run --rm \
+		--network none \
 		-u $(shell id -u):$(shell id -g) \
 		-v $(shell pwd):/gatekeeper-library \
-		gomplate-container ./scripts/generate.sh
+		$(GOMPLATE_IMAGE) ./scripts/generate.sh
 
 .PHONY: __build-gomplate
 __build-gomplate:
-	$(docker) build --build-arg GOMPLATE_VERSION=$(GOMPLATE_VERSION) -f build/gomplate/Dockerfile -t gomplate-container .
+	$(docker) build $(if $(GOMPLATE_PLATFORM),--platform $(GOMPLATE_PLATFORM)) \
+		--build-arg GOMPLATE_VERSION=$(GOMPLATE_VERSION) \
+		-f build/gomplate/Dockerfile -t $(GOMPLATE_IMAGE) .
+
+.PHONY: test-gomplate-image
+test-gomplate-image: __build-gomplate
+	DOCKER="$(docker)" GOMPLATE_VERSION="$(GOMPLATE_VERSION)" \
+		./build/gomplate/test.sh "$(GOMPLATE_IMAGE)" "$(GOMPLATE_PLATFORM)"
 
 .PHONY: require-suites
 require-suites:
