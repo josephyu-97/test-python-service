@@ -285,8 +285,8 @@ YAML
 apiVersion: v1
 kind: Pod
 metadata:
-  name: other
-  namespace: default
+    name: other
+    namespace: default
 spec: {}
 YAML
 

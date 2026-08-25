@@ -248,13 +248,13 @@ manifest_identity() {
       metadata:)
         in_metadata=true
         ;;
-      '  name:'*)
+      '  name:'*|'    name:'*)
         if [[ "$in_metadata" == true ]]; then
           name="${line#*:}"
           name="${name#"${name%%[![:space:]]*}"}"
         fi
         ;;
-      '  namespace:'*)
+      '  namespace:'*|'    namespace:'*)
         if [[ "$in_metadata" == true ]]; then
           namespace="${line#*:}"
           namespace="${namespace#"${namespace%%[![:space:]]*}"}"
