@@ -46,8 +46,12 @@ endif
 uninstall:
 	helm uninstall -n gatekeeper-system gatekeeper
 
-test-integration:
+.PHONY: test-integration test-integration-unit
+test-integration: test-integration-unit
 	bats -t test/bats/test.bats
+
+test-integration-unit:
+	bats -t test/bats/helpers_test.bats
 
 .PHONY: verify-gator
 verify-gator:

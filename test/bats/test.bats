@@ -6,6 +6,13 @@ TESTS_DIR=library
 BATS_TESTS_DIR=test/bats
 WAIT_TIME=300
 SLEEP_TIME=5
+READINESS_SLEEP_TIME=0.2
+
+EXPECTED_POLICY_COUNT=49
+EXPECTED_CONSTRAINT_COUNT=69
+EXPECTED_INVENTORY_COUNT=21
+EXPECTED_ALLOWED_COUNT=89
+EXPECTED_DISALLOWED_COUNT=91
 CLEAN_CMD="echo cleaning..."
 
 teardown() {
@@ -81,23 +88,50 @@ setup() {
 }
 
 @test "testing constraint templates" {
+  local discovered_policies
+  local discovered_constraints
+  local discovered_inventory
+  local discovered_allowed
+  local discovered_disallowed
+  local attempted_policies=0
+  local attempted_constraints=0
+  local attempted_inventory=0
+  local attempted_allowed=0
+  local attempted_disallowed=0
+
+  discovered_policies=$(find "$TESTS_DIR" -mindepth 2 -maxdepth 2 -type d | wc -l | tr -d '[:space:]')
+  discovered_constraints=$(find "$TESTS_DIR" -type f -path '*/samples/*/constraint.yaml' | wc -l | tr -d '[:space:]')
+  discovered_inventory=$(find "$TESTS_DIR" -type f -path '*/samples/*/example_inventory*.yaml' | wc -l | tr -d '[:space:]')
+  discovered_allowed=$(find "$TESTS_DIR" -type f -path '*/samples/*/example_allowed*.yaml' | wc -l | tr -d '[:space:]')
+  discovered_disallowed=$(find "$TESTS_DIR" -type f -path '*/samples/*/example_disallowed*.yaml' | wc -l | tr -d '[:space:]')
+
+  echo "discovered fixtures: policies=${discovered_policies}, constraints=${discovered_constraints}, inventory=${discovered_inventory}, allowed=${discovered_allowed}, disallowed=${discovered_disallowed}"
+  assert_equal "$EXPECTED_POLICY_COUNT" "$discovered_policies"
+  assert_equal "$EXPECTED_CONSTRAINT_COUNT" "$discovered_constraints"
+  assert_equal "$EXPECTED_INVENTORY_COUNT" "$discovered_inventory"
+  assert_equal "$EXPECTED_ALLOWED_COUNT" "$discovered_allowed"
+  assert_equal "$EXPECTED_DISALLOWED_COUNT" "$discovered_disallowed"
+
   for policy in "$TESTS_DIR"/*/*; do
     if [ -d "$policy" ]; then
       local policy_group=$(basename "$(dirname "$policy")")
       local template_name=$(basename "$policy")
       echo "running integration test against policy group: $policy_group, constraint template: $template_name"
       # apply template
+      attempted_policies=$((attempted_policies + 1))
       wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -k $policy"
       local kind=$(yq e .metadata.name "$policy"/template.yaml)
       for sample in "$policy"/samples/*; do
         echo "testing sample constraint: $(basename "$sample")"
         # apply constraint
+        attempted_constraints=$((attempted_constraints + 1))
         wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${sample}/constraint.yaml"
         local name=$(yq e .metadata.name "$sample"/constraint.yaml)
-        wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_enforced $kind $name"
+        wait_for_process ${WAIT_TIME} ${READINESS_SLEEP_TIME} "constraint_enforced $kind $name"
 
         for inventory in "$sample"/example_inventory*.yaml; do
           if [[ -e "$inventory" ]]; then
+            attempted_inventory=$((attempted_inventory + 1))
             run kubectl apply -f "$inventory"
             assert_match 'created' "$output"
             assert_success
@@ -106,7 +140,9 @@ setup() {
 
         for allowed in "$sample"/example_allowed*.yaml; do
           if [[ -e "$allowed" ]]; then
-            # apply resource
+            # The server-side dry run is the first attempt for every discovered
+            # fixture; unsupported APIs retain their existing skip behavior.
+            attempted_allowed=$((attempted_allowed + 1))
             if kubectl apply -f "$allowed" --dry-run=server &> /dev/null; then
               echo "Applying ${allowed} with contents:"
               cat ${allowed}
@@ -121,7 +157,9 @@ setup() {
 
         for disallowed in "$sample"/example_disallowed*.yaml; do
           if [[ -e "$disallowed" ]]; then
-            # apply resource
+            # The server-side dry run is the first attempt for every discovered
+            # fixture; unsupported APIs retain their existing skip behavior.
+            attempted_disallowed=$((attempted_disallowed + 1))
             if kubectl apply -f "$disallowed" --dry-run=server &> /dev/null; then
               echo "Applying ${disallowed} with contents:"
               cat ${disallowed}
@@ -149,4 +187,11 @@ setup() {
       kubectl delete -k "$policy"
     fi
   done
+
+  echo "attempted fixtures: policies=${attempted_policies}, constraints=${attempted_constraints}, inventory=${attempted_inventory}, allowed=${attempted_allowed}, disallowed=${attempted_disallowed}"
+  assert_equal "$discovered_policies" "$attempted_policies"
+  assert_equal "$discovered_constraints" "$attempted_constraints"
+  assert_equal "$discovered_inventory" "$attempted_inventory"
+  assert_equal "$discovered_allowed" "$attempted_allowed"
+  assert_equal "$discovered_disallowed" "$attempted_disallowed"
 }

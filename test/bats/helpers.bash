@@ -58,54 +58,188 @@ assert_not_match() {
   fi
 }
 
+# Store the current time in milliseconds in the variable named by $1. Tests
+# replace this function with a deterministic clock.
+wait_clock_now() {
+  local destination="$1"
+  local now
+
+  now="$(date +%s%3N)" || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  printf -v "$destination" '%s' "$now"
+}
+
+# Sleep for the number of milliseconds in $1. Tests replace this function so
+# waiting does not consume wall-clock time.
+wait_clock_sleep() {
+  local milliseconds="$1"
+  local seconds=$((milliseconds / 1000))
+  local remainder=$((milliseconds % 1000))
+
+  sleep "$(printf '%d.%03d' "$seconds" "$remainder")"
+}
+
+seconds_to_milliseconds() {
+  local destination="$1"
+  local seconds="$2"
+  local whole
+  local fraction
+
+  if [[ ! "$seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "invalid duration: ${seconds}" >&2
+    return 1
+  fi
+
+  whole="${seconds%%.*}"
+  if [[ "$seconds" == *.* ]]; then
+    fraction="${seconds#*.}000"
+    fraction="${fraction:0:3}"
+  else
+    fraction="000"
+  fi
+
+  printf -v "$destination" '%d' "$((10#${whole} * 1000 + 10#${fraction}))"
+}
+
 wait_for_process() {
-  wait_time="$1"
-  sleep_time="$2"
-  cmd="$3"
-  while [ "$wait_time" -gt 0 ]; do
+  local wait_time="$1"
+  local sleep_time="$2"
+  local cmd="$3"
+  local timeout_ms
+  local interval_ms
+  local started_at
+  local deadline
+  local observation_started
+  local now
+  local next_observation
+  local sleep_ms
+
+  seconds_to_milliseconds timeout_ms "$wait_time" || return 2
+  seconds_to_milliseconds interval_ms "$sleep_time" || return 2
+
+  # Readiness must never be observed more than five times per second. Clamp
+  # callers to the minimum interval rather than allowing accidental busy loops.
+  if ((interval_ms < 200)); then
+    interval_ms=200
+  fi
+
+  wait_clock_now started_at || return 2
+  deadline=$((started_at + timeout_ms))
+  now="$started_at"
+
+  while ((now < deadline)); do
+    observation_started="$now"
     if eval "$cmd"; then
+      # Return on the successful observation; do not add a trailing sleep.
       return 0
-    else
-      sleep "$sleep_time"
-      wait_time=$((wait_time - sleep_time))
+    fi
+
+    # Re-read the clock after the command so command execution consumes the
+    # timeout and the interval is measured between observation starts.
+    wait_clock_now now || return 2
+    if ((now >= deadline)); then
+      break
+    fi
+
+    next_observation=$((observation_started + interval_ms))
+    if ((next_observation > deadline)); then
+      next_observation="$deadline"
+    fi
+    if ((now < next_observation)); then
+      sleep_ms=$((next_observation - now))
+      wait_clock_sleep "$sleep_ms" || return 2
+      wait_clock_now now || return 2
     fi
   done
+
+  echo "timed out after ${wait_time}s waiting for: ${cmd}" >&2
   return 1
 }
 
 get_ca_cert() {
   destination="$1"
-  if [ $(kubectl get secret -n gatekeeper-system gatekeeper-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | wc -w) -eq 0 ]; then
+  if [ "$(kubectl get secret -n gatekeeper-system gatekeeper-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | wc -w)" -eq 0 ]; then
     return 1
   fi
-  kubectl get secret -n gatekeeper-system gatekeeper-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | base64 -d >$destination
+  kubectl get secret -n gatekeeper-system gatekeeper-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | base64 -d >"$destination"
+}
+
+constraint_status_ready() {
+  local pod_list="$1"
+  local constraint="$2"
+  local summary
+  local ready_count
+  local pod_count
+  local current_pods_match
+
+  # A ready entry must belong to a current webhook pod, have observed the
+  # constraint's current generation, include the webhook operation, and report
+  # successful enforcement. Requiring the exact current pod ID set prevents
+  # duplicate or terminated-pod statuses from satisfying the count by accident.
+  if ! summary="$(printf '%s\n%s\n' "$pod_list" "$constraint" | jq -er -s '
+    if length != 2 or (.[0] | type) != "object" or (.[1] | type) != "object" then
+      error("pod and constraint responses must be JSON objects")
+    else
+      .[0] as $pods
+      | .[1] as $constraint
+      | if ($pods.items | type) != "array" then
+          error("pod response is missing items")
+        elif any($pods.items[]; (.metadata.name | type) != "string" or (.metadata.name | length) == 0) then
+          error("pod response contains an item without a name")
+        elif ($constraint.metadata.generation | type) != "number" then
+          error("constraint response is missing metadata.generation")
+        elif (($constraint.status.byPod? // []) | type) != "array" then
+          error("constraint status.byPod is not an array")
+        else
+          ($pods.items | map(.metadata.name)) as $pod_ids
+          | ($constraint.status.byPod? // []) as $statuses
+          | [
+              $statuses[]
+              | select(
+                  (.id | type) == "string"
+                  and (.operations | type) == "array"
+                  and (.operations | index("webhook") != null)
+                  and .observedGeneration == $constraint.metadata.generation
+                  and .enforced == true
+                  and ((.errors // []) | type) == "array"
+                  and ((.errors // []) | length) == 0
+                )
+            ] as $ready
+          | "\($ready | length)\t\($pod_ids | length)\t\(($ready | map(.id) | sort) == ($pod_ids | sort))"
+        end
+    end
+  ')"; then
+    echo "invalid pod or constraint status response"
+    return 1
+  fi
+
+  IFS=$'\t' read -r ready_count pod_count current_pods_match <<<"$summary"
+  echo "ready: ${ready_count}, expected: ${pod_count}"
+
+  if ((pod_count < 1)); then
+    echo "Gatekeeper pod count is < 1"
+    return 1
+  fi
+
+  [[ "$ready_count" -eq "$pod_count" && "$current_pods_match" == "true" ]]
 }
 
 constraint_enforced() {
   local kind="$1"
   local name="$2"
-  local pod_list="$(kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json)"
-  if [[ $? -ne 0 ]]; then
+  local pod_list
+  local cstr
+
+  if ! pod_list="$(kubectl -n gatekeeper-system get pod -l gatekeeper.sh/operation=webhook -o json)"; then
     echo "error gathering pods"
     return 1
   fi
 
-  # ensure pod_count is at least one
-  local pod_count=$(echo "${pod_list}" | jq '.items | length')
-  if [[ ${pod_count} -lt 1 ]]; then
-    echo "Gatekeeper pod count is < 1"
-    return 2
-  fi
-
-  local cstr="$(kubectl get ${kind} ${name} -ojson)"
-  if [[ $? -ne 0 ]]; then
+  if ! cstr="$(kubectl get "$kind" "$name" -o json)"; then
     echo "Error gathering constraint ${kind} ${name}"
-    return 3
+    return 1
   fi
 
-  echo "checking constraint ${cstr}"
-
-  local ready_count=$(echo "${cstr}" | jq '.metadata.generation as $generation | [.status.byPod[] | select( .operations[] == "webhook" and .observedGeneration == $generation)] | length')
-  echo "ready: ${ready_count}, expected: ${pod_count}"
-  [[ "${ready_count}" -eq "${pod_count}" ]]
+  echo "checking constraint ${kind} ${name}"
+  constraint_status_ready "$pod_list" "$cstr"
 }
