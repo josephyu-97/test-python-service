@@ -2,7 +2,7 @@ ARG GOMPLATE_VERSION=3.11.6
 
 # Download on the builder's native architecture. TARGETOS and TARGETARCH select
 # the release binary copied into the target image.
-FROM --platform=$BUILDPLATFORM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS gomplate-download
+FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS gomplate-download
 ARG GOMPLATE_VERSION
 ARG TARGETOS
 ARG TARGETARCH
@@ -36,7 +36,7 @@ RUN set -eu; \
     mv "${artifact}" gomplate; \
     chmod 0755 gomplate
 
-FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 ARG GOMPLATE_VERSION
 
 # ca-certificates retains Gomplate's HTTPS data-source support. Alpine's
