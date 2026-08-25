@@ -1,37 +1,25 @@
 package k8suniqueserviceselector
 
-make_apiversion(kind) = apiVersion {
-  g := kind.group
-  v := kind.version
-  g != ""
-  apiVersion = sprintf("%v/%v", [g, v])
-}
-
-make_apiversion(kind) = apiVersion {
-  kind.group == ""
-  apiVersion = kind.version
-}
-
 identical(obj, review) {
-  obj.metadata.namespace == review.namespace
-  obj.metadata.name == review.name
-  obj.kind == review.kind.kind
-  obj.apiVersion == make_apiversion(review.kind)
-}
-
-flatten_selector(obj) = flattened {
-  selectors := [s | s = concat(":", [key, val]); val = obj.spec.selector[key]]
-  flattened := concat(",", sort(selectors))
+  obj.metadata.namespace == review.object.metadata.namespace
+  obj.metadata.name == review.object.metadata.name
 }
 
 violation[{"msg": msg}] {
   input.review.kind.kind == "Service"
   input.review.kind.version == "v1"
   input.review.kind.group == ""
-  input_selector := flatten_selector(input.review.object)
-  other := data.inventory.namespace[namespace][_]["Service"][name]
+
+  selector := input.review.object.spec.selector
+  count(selector) > 0
+
+  namespace := input.review.object.metadata.namespace
+  other := data.inventory.namespace[namespace]["v1"]["Service"][name]
   not identical(other, input.review)
-  other_selector := flatten_selector(other)
-  input_selector == other_selector
+
+  other_selector := other.spec.selector
+  count(other_selector) > 0
+  selector == other_selector
+
   msg := sprintf("same selector as service <%v> in namespace <%v>", [name, namespace])
 }

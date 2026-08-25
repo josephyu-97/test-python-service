@@ -6,7 +6,7 @@ title: Unique Service Selector
 # Unique Service Selector
 
 ## Description
-Requires Services to have unique selectors within a namespace. Selectors are considered the same if they have identical keys and values. Selectors may share a key/value pair so long as there is at least one distinct key/value pair between them.
+Requires Services with non-empty selectors to have unique selectors within a namespace. Services without selectors are ignored. Selectors are considered the same if they have identical keys and values. Selectors may share a key/value pair so long as there is at least one distinct key/value pair between them.
 https://kubernetes.io/docs/concepts/services-networking/service/#defining-a-service
 
 ## Template
@@ -17,7 +17,7 @@ metadata:
   name: k8suniqueserviceselector
   annotations:
     metadata.gatekeeper.sh/title: "Unique Service Selector"
-    metadata.gatekeeper.sh/version: 1.0.2
+    metadata.gatekeeper.sh/version: 1.0.3
     metadata.gatekeeper.sh/requires-sync-data: |
       "[
         [
@@ -29,8 +29,9 @@ metadata:
         ]
       ]"
     description: >-
-      Requires Services to have unique selectors within a namespace.
-      Selectors are considered the same if they have identical keys and values.
+      Requires Services with non-empty selectors to have unique selectors within
+      a namespace. Services without selectors are ignored. Selectors are
+      considered the same if they have identical keys and values.
       Selectors may share a key/value pair so long as there is at least one
       distinct key/value pair between them.
 
@@ -45,39 +46,27 @@ spec:
       rego: |
         package k8suniqueserviceselector
 
-        make_apiversion(kind) = apiVersion {
-          g := kind.group
-          v := kind.version
-          g != ""
-          apiVersion = sprintf("%v/%v", [g, v])
-        }
-
-        make_apiversion(kind) = apiVersion {
-          kind.group == ""
-          apiVersion = kind.version
-        }
-
         identical(obj, review) {
-          obj.metadata.namespace == review.namespace
-          obj.metadata.name == review.name
-          obj.kind == review.kind.kind
-          obj.apiVersion == make_apiversion(review.kind)
-        }
-
-        flatten_selector(obj) = flattened {
-          selectors := [s | s = concat(":", [key, val]); val = obj.spec.selector[key]]
-          flattened := concat(",", sort(selectors))
+          obj.metadata.namespace == review.object.metadata.namespace
+          obj.metadata.name == review.object.metadata.name
         }
 
         violation[{"msg": msg}] {
           input.review.kind.kind == "Service"
           input.review.kind.version == "v1"
           input.review.kind.group == ""
-          input_selector := flatten_selector(input.review.object)
-          other := data.inventory.namespace[namespace][_]["Service"][name]
+
+          selector := input.review.object.spec.selector
+          count(selector) > 0
+
+          namespace := input.review.object.metadata.namespace
+          other := data.inventory.namespace[namespace]["v1"]["Service"][name]
           not identical(other, input.review)
-          other_selector := flatten_selector(other)
-          input_selector == other_selector
+
+          other_selector := other.spec.selector
+          count(other_selector) > 0
+          selector == other_selector
+
           msg := sprintf("same selector as service <%v> in namespace <%v>", [name, namespace])
         }
 
@@ -137,7 +126,7 @@ kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-
 
 </details>
 <details>
-<summary>example-disallowed</summary>
+<summary>same-namespace-identical-selector</summary>
 
 ```yaml
 apiVersion: v1
@@ -157,6 +146,222 @@ Usage
 
 ```shell
 kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/example_disallowed.yaml
+```
+
+</details>
+<details>
+<summary>cross-namespace-identical-selector</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gatekeeper-test-service-disallowed
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    key: value
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/example_disallowed.yaml
+```
+
+</details>
+<details>
+<summary>mixed-namespace-identical-selectors</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gatekeeper-test-service-disallowed
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    key: value
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/example_disallowed.yaml
+```
+
+</details>
+<details>
+<summary>one-violation-per-same-namespace-service</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gatekeeper-test-service-disallowed
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    key: value
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/example_disallowed.yaml
+```
+
+</details>
+<details>
+<summary>omitted-selector-does-not-participate</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: selector-omitted-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/selector_omitted.yaml
+```
+
+</details>
+<details>
+<summary>empty-selector-does-not-participate</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: selector-empty-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector: {}
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/selector_empty.yaml
+```
+
+</details>
+<details>
+<summary>selected-service-ignores-selectorless-inventory</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gatekeeper-test-service-disallowed
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    key: value
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/example_disallowed.yaml
+```
+
+</details>
+<details>
+<summary>compound-selector-key-order-independent</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: compound-selector-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    app: store
+    tier: frontend
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/compound_selector.yaml
+```
+
+</details>
+<details>
+<summary>partial-subset-superset-and-overlap-allowed</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: compound-selector-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    app: store
+    tier: frontend
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/compound_selector.yaml
+```
+
+</details>
+<details>
+<summary>update-inventoried-service-itself</summary>
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: compound-selector-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    app: store
+    tier: frontend
+
+```
+
+Usage
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master/library/general/uniqueserviceselector/samples/unique-service-selector/compound_selector.yaml
 ```
 
 </details>

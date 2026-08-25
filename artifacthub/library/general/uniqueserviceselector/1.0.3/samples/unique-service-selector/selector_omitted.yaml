@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: selector-omitted-candidate
+  namespace: default
+spec:
+  ports:
+    - port: 443

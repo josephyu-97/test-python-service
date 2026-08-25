@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: compound-selector-identical
+  namespace: default
+spec:
+  ports:
+    - port: 443
+  selector:
+    tier: frontend
+    app: store
